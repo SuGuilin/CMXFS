@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES="0" torchrun -m --nproc_per_node=1 --master_port=29501 train.py -d 0 -n "mfnet"

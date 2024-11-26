@@ -1,0 +1,121 @@
+seed: 3407
+
+# Directory settings
+root_dir: "/home/suguilin/CMXFS/"
+abs_dir: "."
+dataset_name: "MFNet"
+dataset_path: "/home/suguilin/MMFS/datasets/MFNet"
+
+# Dataset Config
+rgb_folder: "RGB"
+rgb_format: ".png"
+x_folder: "Modal"
+x_format: ".png"
+text_root_folder: "datasets/MFNet/Text_Bert" # "datasets/MFNet/Text"
+text_format: ".npy" # ".txt"
+guide_root_folder: "datasets/MFNet/Guide"
+guide_format: ".png"
+label_folder: "Label"
+label_format: ".png"
+gt_transform: false
+
+# Classes and labels
+num_classes: 9
+class_names:
+  [
+    "unlabeled",
+    "car",
+    "person",
+    "bike",
+    "curve",
+    "car stop",
+    "guardrail",
+    "color cone",
+    "bump",
+  ]
+pattale: [
+    [0, 0, 0], # unlabelled
+    [128, 0, 64], # car
+    [0, 64, 64], # person
+    [192, 128, 0], # bike
+    [192, 0, 0], # curve
+    [0, 128, 128], # car_stop
+    [128, 64, 64], # guardrail
+    [128, 128, 192], # color_cone
+    [0, 64, 192], # bump
+  ]
+
+# Image Config
+x_is_single_channel: true
+train_source: "datasets/MFNet/train2.txt"
+eval_source: "datasets/MFNet/test.txt"
+is_test: false
+num_train_imgs: 1176
+num_eval_imgs: 393
+background: 255
+image_height: 480 #480 #384  #480 #384
+image_width: 640 #640 #512  #640 #512
+norm_mean: [0.485]
+norm_std: [0.229]
+
+# Network Config
+backbone: 'vmamba_tiny'
+pretrained_backbone: null
+decoder: "MLPDecoder"
+decoder_embed_dim: 768
+rank_list:  [16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240]
+spe_rank: 16
+modal_num: 2
+topk: 9
+pre_softmax: True
+modals: ['visible', 'thermal']
+
+# Training Config
+align_corners: False
+optimizer: "AdamW"
+lr: 0.00006 #0.0001
+lr_power: 0.9
+momentum: 0.9
+weight_decay: 0.01
+batch_size: 10 #2 #8
+nepochs: 800
+niters_per_epoch: 147 #147 #271 #136 #542 #136 #361 #271 #542   # 155 #271  # 542
+num_workers: 16
+fix_bias: true
+bn_eps: 0.001
+bn_momentum: 0.1
+train_scale_array: [0.5, 0.75, 1, 1.25, 1.5, 1.75]
+warm_up_epoch: 10
+
+# Loss config
+lambda_reg: 0.5 # loss_language
+lambda_coeff: 1 # loss_language
+alpha: 10 # loss_in
+beta: 10 # loss_grad
+gamma: 10 # loss_color
+theta: 10 # loss_seg
+sigma: 0.05 # loss_aux
+
+# Evaluation Config
+eval_stride_rate: 0.6667
+eval_scale_array: [1]
+eval_flip: false
+eval_size: [480, 640]
+
+# Checkpoint settings
+checkpoint_start_epoch: 150
+checkpoint_step: 5
+checkpoint_dir: "experiment/MFNet/exp1/checkpoint"
+log_dir_link: "experiment/MFNet/exp1"
+log_dir: "experiment/MFNet/exp1"
+tb_dir: "experiment/MFNet/exp1/tb"
+
+# Result settings
+save_path: "./experiment/MFNet/exp1/result"
+
+# Log file settings
+log_file: "experiment/MFNet/exp1/train_output.log"
+link_log_file: "experiment/MFNet/exp1/log_last.log"
+val_log_file: "experiment/MFNet/exp1/val_output.log"
+link_val_log_file: "experiment/MFNet/exp1/val_last.log"
+test_log_file: "experiment/MFNet/exp1/test_output.log"
