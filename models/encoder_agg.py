@@ -11,7 +11,9 @@ from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from .vmamba.vmamba import VSSM, LayerNorm2d
 from .modules import PCASC
 from .modules import IGMAVC
-from .modules import DiffEnhance, LoraMoEBlock, FRM, LinearAttention, DetailFeatureExtraction, DenseMambaBlock, ChannelEmbed, CMLLFF, ResMoEBlock
+from .modules import DiffEnhance, LoraMoEBlock, FRM, LinearAttention, DetailFeatureExtraction, DenseMambaBlock, \
+    ChannelEmbed, CMLLFF, ResMoEBlock, SME
+from .freqmamba import VSSBlock, SS2D_map
 from engine.logger import get_logger
 
 logger = get_logger()
@@ -21,15 +23,16 @@ class DWConv(nn.Module):
     """
     Depthwise convolution bloc: input: x with size(B N C); output size (B N C)
     """
+
     def __init__(self, dim=768):
         super(DWConv, self).__init__()
         self.dwconv = nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, bias=True, groups=dim)
 
     def forward(self, x, H, W):
         B, N, C = x.shape
-        x = x.permute(0, 2, 1).reshape(B, C, H, W).contiguous() # B N C -> B C N -> B C H W
-        x = self.dwconv(x) 
-        x = x.flatten(2).transpose(1, 2) # B C H W -> B N C
+        x = x.permute(0, 2, 1).reshape(B, C, H, W).contiguous()  # B N C -> B C N -> B C H W
+        x = self.dwconv(x)
+        x = x.flatten(2).transpose(1, 2)  # B C H W -> B N C
 
         return x
 
@@ -86,8 +89,8 @@ class Backbone_VSSM(VSSM):
             ln2d=LayerNorm2d,
             bn=nn.BatchNorm2d,
         )
-        norm_layer: nn.Module = _NORMLAYERS.get(norm_layer.lower(), None)        
-        
+        norm_layer: nn.Module = _NORMLAYERS.get(norm_layer.lower(), None)
+
         self.out_indices = out_indices
         for i in out_indices:
             layer = norm_layer(self.dims[i])
@@ -111,6 +114,34 @@ class Backbone_VSSM(VSSM):
         #     for i in range(self.num_layers)
         # ])
 
+        self.freqmamba = nn.ModuleList([
+            VSSBlock(
+                hidden_dim=self.dims[i//2],
+                drop_path=0.,
+                norm_layer=nn.LayerNorm,
+                attn_drop_rate=0,
+                expand=4.0,
+                d_state=8 * 2 ** (i//2),)
+            for i in range(self.num_layers)
+        ])
+
+        self.map = nn.ModuleList([
+            SS2D_map(
+                d_model=self.dims[i],
+                drop_path=0.,
+                norm_layer=nn.LayerNorm,
+                attn_drop_rate=0,
+                expand=4.0,
+                d_state=8, )
+            for i in range(self.num_layers)
+        ])
+
+        self.process = nn.ModuleList([
+            nn.Linear(self.dims[i], self.dims[i+1])
+            for i in range(self.num_layers - 1)
+        ])
+
+
         # self.LinearAttentions = nn.ModuleList([
         #     LinearAttention(dim=self.dims[i//2], num_heads=8)
         #     for i in range(self.num_layers * 2)
@@ -127,7 +158,7 @@ class Backbone_VSSM(VSSM):
         # ])
 
         self.ChannelEmbeds = nn.ModuleList([
-            ChannelEmbed(in_channels=self.dims[i]*2, out_channels=self.dims[i])
+            ChannelEmbed(in_channels=self.dims[i] * 2, out_channels=self.dims[i])
             for i in range(self.num_layers)
         ])
 
@@ -137,7 +168,10 @@ class Backbone_VSSM(VSSM):
         ])
 
         self.ResMoEBlocks = nn.ModuleList([
-            ResMoEBlock(in_ch=self.dims[i//2], num_experts=4, topk=2, use_shuffle=True)
+            nn.Sequential(
+                ResMoEBlock(in_ch=self.dims[i // 2], num_experts=3, topk=1, use_shuffle=True),
+                SME(in_ch=self.dims[i // 2]),
+            )
             for i in range(self.num_layers * 2)
         ])
 
@@ -149,7 +183,7 @@ class Backbone_VSSM(VSSM):
     def load_pretrained(self, ckpt=None, key="model"):
         if ckpt is None:
             return
-        
+
         try:
             _ckpt = torch.load(open(ckpt, "rb"), map_location=torch.device("cpu"))
             pretrained_weights = _ckpt[key]
@@ -168,7 +202,7 @@ class Backbone_VSSM(VSSM):
                     new_weights[name] = param
             print(f"Successfully load ckpt {ckpt}")
             incompatibleKeys = self.load_state_dict(new_weights, strict=False)
-            print(incompatibleKeys)        
+            print(incompatibleKeys)
         except Exception as e:
             print(f"Failed loading checkpoint form {ckpt}: {e}")
 
@@ -184,20 +218,31 @@ class Backbone_VSSM(VSSM):
         outs_e = []
         outs_semantic = []
         outs_vision = []
+
         for i, (layer, layer_extra) in enumerate(zip(self.layers, self.layers_extra)):
             b, c, h, w = x_rgb.shape
-            o_rgb, x_rgb = layer_forward(layer, x_rgb) # (B, H, W, C)
+            o_rgb, x_rgb = layer_forward(layer, x_rgb)  # (B, H, W, C)
             o_e, x_e = layer_forward(layer_extra, x_e)
 
-            # o_rgb = self.LoraMoEBlocks[i](o_rgb, 'visible') + o_rgb
-            # o_e = self.LoraMoEBlocks[i](o_e, 'thermal') + o_e
-            
 
             o_rgb, o_e = self.CMLlFFS[i](o_rgb, o_e)
             x_rgb, x_e = layer.downsample(o_rgb), layer_extra.downsample(o_e)
 
-            o_rgb = self.ResMoEBlocks[2 * i](o_rgb)
-            o_e = self.ResMoEBlocks[2 * i + 1](o_rgb)
+
+            # o_rgb = self.LoraMoEBlocks[i](o_rgb, 'visible') + o_rgb
+            # o_e = self.LoraMoEBlocks[i](o_e, 'thermal') + o_e
+            if i < 2:
+                o_rgb = self.freqmamba[2 * i](o_rgb.permute(0, 2, 3 ,1).view(b, -1, c), (h, w)) + o_rgb
+                o_e = self.freqmamba[2 * i + 1](o_e.permute(0, 2, 3 ,1).view(b, -1, c), (h, w)) + o_e
+
+            o_1 = o_rgb.permute(0, 2, 3, 1)
+            o_2 = o_e.permute(0, 2, 3, 1)
+            o_fused = self.ChannelEmbeds[i](torch.cat([o_1, o_2], dim=3).permute(0, 3, 1, 2))
+
+            o_fused = self.ResMoEBlocks[2 * i](o_fused)
+            o_fused= self.ResMoEBlocks[2 * i + 1](o_fused)
+            # o_e = self.ResMoEBlocks[4 * i + 2](o_e)
+            # o_e = self.ResMoEBlocks[4 * i + 3](o_e)
             # o_rgb = self.FRMs[2 * i](o_rgb) #+ o_rgb
             # o_e = self.FRMs[2 * i + 1](o_e) #+ o_rgb
 
@@ -205,7 +250,7 @@ class Backbone_VSSM(VSSM):
             # if i < 2:
             #     o_e = self.DiffEnhances[i](o_rgb, o_e, 'tde')
             #     x_e = layer_extra.downsample(o_e) + x_e
-            
+
             # Enhance semantic
             # if i > 1:
             #     o_rgb = self.DiffEnhances[i](o_rgb, o_e, 'rse')
@@ -219,13 +264,12 @@ class Backbone_VSSM(VSSM):
             # o_1 = o_rgb_1 + o_e_1
             # o_2 = o_rgb_2 + o_e_2
 
-
             # o_1 = self.DenseMambas[2 * i](o_1.permute(0, 2, 3, 1))
             # o_2 = self.DenseMambas[2 * i + 1](o_2.permute(0, 2, 3, 1))
-            
-            o_1 = o_rgb.permute(0, 2, 3, 1)
-            o_2 = o_e.permute(0, 2, 3, 1)
-            o_fused = self.ChannelEmbeds[i](torch.cat([o_1, o_2], dim=3).permute(0, 3, 1, 2))
+
+            # o_1 = o_rgb.permute(0, 2, 3, 1)
+            # o_2 = o_e.permute(0, 2, 3, 1)
+            # o_fused = self.ChannelEmbeds[i](torch.cat([o_1, o_2], dim=3).permute(0, 3, 1, 2))
 
             if i in self.out_indices:
                 norm_layer = getattr(self, f'outnorm{i}')
@@ -242,7 +286,7 @@ class Backbone_VSSM(VSSM):
 
         if len(self.out_indices) == 0:
             return x_rgb, x_e
-        
+
         return outs_vision, outs_semantic
 
 
@@ -315,15 +359,15 @@ class Attention(nn.Module):
     def forward(self, x, H, W):
         B, N, C = x.shape
         # B N C -> B N num_head C//num_head -> B C//num_head N num_heads
-        q = self.q(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3) 
+        q = self.q(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
 
         if self.sr_ratio > 1:
-            x_ = x.permute(0, 2, 1).reshape(B, C, H, W) 
-            x_ = self.sr(x_).reshape(B, C, -1).permute(0, 2, 1) 
+            x_ = x.permute(0, 2, 1).reshape(B, C, H, W)
+            x_ = self.sr(x_).reshape(B, C, -1).permute(0, 2, 1)
             x_ = self.norm(x_)
-            kv = self.kv(x_).reshape(B, -1, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4) 
+            kv = self.kv(x_).reshape(B, -1, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         else:
-            kv = self.kv(x).reshape(B, -1, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4) 
+            kv = self.kv(x).reshape(B, -1, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         k, v = kv[0], kv[1]
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
@@ -341,6 +385,7 @@ class Block(nn.Module):
     """
     Transformer Block: Self-Attention -> Mix FFN -> OverLap Patch Merging
     """
+
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, sr_ratio=1):
         super().__init__()
@@ -425,7 +470,7 @@ class OverlapPatchEmbed(nn.Module):
 
 
 class RGBXTransformer(nn.Module):
-    def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dims=[64, 128, 256, 512], 
+    def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dims=[64, 128, 256, 512],
                  num_heads=[1, 2, 4, 8], mlp_ratios=[4, 4, 4, 4], qkv_bias=False, qk_scale=None, drop_rate=0.,
                  attn_drop_rate=0., drop_path_rate=0., norm_layer=nn.LayerNorm, norm_fuse=nn.BatchNorm2d,
                  depths=[3, 4, 6, 3], sr_ratios=[8, 4, 2, 1]):
@@ -444,13 +489,16 @@ class RGBXTransformer(nn.Module):
                                               embed_dim=embed_dims[3])
 
         self.extra_patch_embed1 = OverlapPatchEmbed(img_size=img_size, patch_size=7, stride=4, in_chans=in_chans,
-                                              embed_dim=embed_dims[0])
-        self.extra_patch_embed2 = OverlapPatchEmbed(img_size=img_size // 4, patch_size=3, stride=2, in_chans=embed_dims[0],
-                                              embed_dim=embed_dims[1])
-        self.extra_patch_embed3 = OverlapPatchEmbed(img_size=img_size // 8, patch_size=3, stride=2, in_chans=embed_dims[1],
-                                              embed_dim=embed_dims[2])
-        self.extra_patch_embed4 = OverlapPatchEmbed(img_size=img_size // 16, patch_size=3, stride=2, in_chans=embed_dims[2],
-                                              embed_dim=embed_dims[3])
+                                                    embed_dim=embed_dims[0])
+        self.extra_patch_embed2 = OverlapPatchEmbed(img_size=img_size // 4, patch_size=3, stride=2,
+                                                    in_chans=embed_dims[0],
+                                                    embed_dim=embed_dims[1])
+        self.extra_patch_embed3 = OverlapPatchEmbed(img_size=img_size // 8, patch_size=3, stride=2,
+                                                    in_chans=embed_dims[1],
+                                                    embed_dim=embed_dims[2])
+        self.extra_patch_embed4 = OverlapPatchEmbed(img_size=img_size // 16, patch_size=3, stride=2,
+                                                    in_chans=embed_dims[2],
+                                                    embed_dim=embed_dims[3])
 
         # transformer encoder
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]  # stochastic depth decay rule
@@ -480,7 +528,7 @@ class RGBXTransformer(nn.Module):
 
         self.extra_block2 = nn.ModuleList([Block(
             dim=embed_dims[1], num_heads=num_heads[1], mlp_ratio=mlp_ratios[1], qkv_bias=qkv_bias, qk_scale=qk_scale,
-            drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[cur+1], norm_layer=norm_layer,
+            drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[cur + 1], norm_layer=norm_layer,
             sr_ratio=sr_ratios[1])
             for i in range(depths[1])])
         self.extra_norm2 = norm_layer(embed_dims[1])
@@ -520,16 +568,20 @@ class RGBXTransformer(nn.Module):
         cur += depths[3]
 
         self.IGMAVCs = nn.ModuleList([
-                    IGMAVC(dim=embed_dims[0], reduction=4),
-                    IGMAVC(dim=embed_dims[1], reduction=4),
-                    IGMAVC(dim=embed_dims[2], reduction=4),
-                    IGMAVC(dim=embed_dims[3], reduction=4)])
+            IGMAVC(dim=embed_dims[0], reduction=4),
+            IGMAVC(dim=embed_dims[1], reduction=4),
+            IGMAVC(dim=embed_dims[2], reduction=4),
+            IGMAVC(dim=embed_dims[3], reduction=4)])
 
         self.PCASCs = nn.ModuleList([
-                    PCASC(dim=embed_dims[0], num_heads=num_heads[0], qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop_rate, proj_drop=drop_rate,sr_ratio=sr_ratios[0]),
-                    PCASC(dim=embed_dims[1],  num_heads=num_heads[1], qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop_rate, proj_drop=drop_rate,sr_ratio=sr_ratios[1]),
-                    PCASC(dim=embed_dims[2],  num_heads=num_heads[2], qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop_rate, proj_drop=drop_rate,sr_ratio=sr_ratios[2]),
-                    PCASC(dim=embed_dims[3],  num_heads=num_heads[3], qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop_rate, proj_drop=drop_rate,sr_ratio=sr_ratios[3])])
+            PCASC(dim=embed_dims[0], num_heads=num_heads[0], qkv_bias=qkv_bias, qk_scale=qk_scale,
+                  attn_drop=attn_drop_rate, proj_drop=drop_rate, sr_ratio=sr_ratios[0]),
+            PCASC(dim=embed_dims[1], num_heads=num_heads[1], qkv_bias=qkv_bias, qk_scale=qk_scale,
+                  attn_drop=attn_drop_rate, proj_drop=drop_rate, sr_ratio=sr_ratios[1]),
+            PCASC(dim=embed_dims[2], num_heads=num_heads[2], qkv_bias=qkv_bias, qk_scale=qk_scale,
+                  attn_drop=attn_drop_rate, proj_drop=drop_rate, sr_ratio=sr_ratios[2]),
+            PCASC(dim=embed_dims[3], num_heads=num_heads[3], qkv_bias=qkv_bias, qk_scale=qk_scale,
+                  attn_drop=attn_drop_rate, proj_drop=drop_rate, sr_ratio=sr_ratios[3])])
 
         self.apply(self._init_weights)
 
@@ -577,11 +629,10 @@ class RGBXTransformer(nn.Module):
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_rgb, x_e = self.IGMAVCs[0](x_rgb, x_e)
         x_fused = self.PCASCs[0](x_rgb, x_e)
-        
+
         outs_vision.append(x_rgb)
         outs_vision.append(x_e)
         outs_semantic.append(x_fused)
-        
 
         # stage 2
         x_rgb, H, W = self.patch_embed2(x_rgb)
@@ -597,11 +648,10 @@ class RGBXTransformer(nn.Module):
         x_e = x_e.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         x_rgb, x_e = self.IGMAVCs[1](x_rgb, x_e)
         x_fused = self.PCASCs[1](x_rgb, x_e)
-        
+
         outs_vision.append(x_rgb)
         outs_vision.append(x_e)
         outs_semantic.append(x_fused)
-        
 
         # stage 3
         x_rgb, H, W = self.patch_embed3(x_rgb)
@@ -621,7 +671,6 @@ class RGBXTransformer(nn.Module):
         outs_vision.append(x_rgb)
         outs_vision.append(x_e)
         outs_semantic.append(x_fused)
-        
 
         # stage 4
         x_rgb, H, W = self.patch_embed4(x_rgb)
@@ -641,12 +690,13 @@ class RGBXTransformer(nn.Module):
         outs_vision.append(x_rgb)
         outs_vision.append(x_e)
         outs_semantic.append(x_fused)
-        
-        return outs_vision,outs_semantic
+
+        return outs_vision, outs_semantic
 
     def forward(self, x_rgb, x_e):
         out_vision, out_semantic = self.forward_features(x_rgb, x_e)
         return out_vision, out_semantic
+
 
 def load_dualpath_model(model, model_file):
     # load raw state_dict
@@ -657,7 +707,7 @@ def load_dualpath_model(model, model_file):
             raw_state_dict = raw_state_dict['model']
     else:
         raw_state_dict = model_file
-    
+
     state_dict = {}
     for k, v in raw_state_dict.items():
         if k.find('patch_embed') >= 0:
@@ -674,7 +724,7 @@ def load_dualpath_model(model, model_file):
 
     model.load_state_dict(state_dict, strict=False)
     del state_dict
-    
+
     t_end = time.time()
     logger.info(
         "Load model, Time usage:\n\tIO: {}, initialize parameters: {}".format(
@@ -686,14 +736,14 @@ class vmamba_tiny(Backbone_VSSM):
         super(vmamba_tiny, self).__init__(
             config=config,
             pretrained='/home/suguilin/CMXFS/pretrained/classification/vssm1_tiny_0230s_ckpt_epoch_264.pth',
-            depths=[2, 2, 8, 2], dims=96, drop_path_rate=0.2, 
-            patch_size=4, in_chans=3, num_classes=1000, 
+            depths=[2, 2, 8, 2], dims=96, drop_path_rate=0.2,
+            patch_size=4, in_chans=3, num_classes=1000,
             ssm_d_state=1, ssm_ratio=1.0, ssm_dt_rank="auto", ssm_act_layer="silu",
-            ssm_conv=3, ssm_conv_bias=False, ssm_drop_rate=0.0, 
-            ssm_init="v0", forward_type="v05_noz", 
+            ssm_conv=3, ssm_conv_bias=False, ssm_drop_rate=0.0,
+            ssm_init="v0", forward_type="v05_noz",
             mlp_ratio=4.0, mlp_act_layer="gelu", mlp_drop_rate=0.0, gmlp=False,
-            patch_norm=True, norm_layer=("ln2d" if channel_first else "ln"), 
-            downsample_version="v3", patchembed_version="v2", 
+            patch_norm=True, norm_layer=("ln2d" if channel_first else "ln"),
+            downsample_version="v3", patchembed_version="v2",
             use_checkpoint=False, posembed=False, imgsize=224,
         )
 

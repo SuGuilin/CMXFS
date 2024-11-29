@@ -4,18 +4,18 @@ seed: 3407
 root_dir: "/home/suguilin/MMFS/"
 abs_dir: "."
 dataset_name: "FMB"
-dataset_path: "datasets/FMB"
+dataset_path: "/home/suguilin/MMFS/datasets/FMB"
 
-# Dataset settings
-rgb_root_folder: "datasets/FMB/Visible"
+# Dataset Config
+rgb_folder: "Visible"
 rgb_format: ".png"
-x_root_folder: "datasets/FMB/Infrared"
+x_folder: "Infrared"
 x_format: ".png"
 text_root_folder: "datasets/FMB/Text_Bert" # "datasets/MFNet/Text"
 text_format: ".npy" # ".txt"
 guide_root_folder: "datasets/FMB/Guide"
 guide_format: ".png"
-label_root_folder: "datasets/FMB/Label"
+label_folder: "Label"
 label_format: ".png"
 gt_transform: false
 
@@ -29,7 +29,7 @@ class_names:
     'Building', 
     'Lamp', 
     'Sign', 
-    'Vegetation', 
+    'Vegetation',
     'Sky', 
     'Person', 
     'Car', 
@@ -57,7 +57,7 @@ pattale: [
       [90, 113, 135],  # Pole 14
     ]
 
-# Image properties
+# Image Config
 x_is_single_channel: true
 train_source: "datasets/FMB/train2.txt"
 eval_source: "datasets/FMB/test.txt"
@@ -65,14 +65,14 @@ is_test: false
 num_train_imgs: 1220
 num_eval_imgs: 280
 background: 255
-image_height: 256 #480 #384  #480 #384
-image_width: 256 #640 #512  #640 #512
+image_height: 600 #480 #384  #480 #384
+image_width: 800 #640 #512  #640 #512
 norm_mean: [0.485]
 norm_std: [0.229]
 
-# Model settings
-backbone: "sigma_tiny"
-pretrained_model: null
+# Model Config
+backbone: "vmamba_tiny"
+pretrained_backbone: null
 decoder: "MLPDecoder"
 decoder_embed_dim: 768
 rank_list:  [16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240]
@@ -82,9 +82,7 @@ topk: 9
 pre_softmax: True
 modals: ['visible', 'thermal']
 
-# Training parameters
-usepretrained: True
-pretrained: '/home/suguilin/MMFS/pretrained/classification/vssm1_tiny_0230s_ckpt_epoch_264.pth'
+# Training Config
 align_corners: False
 optimizer: "AdamW"
 lr: 0.00006 #0.0001
@@ -98,7 +96,7 @@ num_workers: 16
 train_scale_array: [0.5, 0.75, 1, 1.25, 1.5, 1.75]
 warm_up_epoch: 10
 
-# Loss parameters
+# Loss Config
 alpha: 10     # loss_in
 beta: 10      # loss_grad
 gamma: 10     # loss_color
@@ -108,7 +106,7 @@ fix_bias: true
 bn_eps: 0.001
 bn_momentum: 0.1
 
-# Evaluation parameters
+# Evaluation Config
 eval_stride_rate: 0.6667
 eval_scale_array: [1]
 eval_flip: false
@@ -117,17 +115,17 @@ eval_crop_size: [600, 800]
 # Checkpoint settings
 checkpoint_start_epoch: 50
 checkpoint_step: 10
-checkpoint_dir: "experiment/FMB/exp8/checkpoint"
-log_dir_link: "experiment/FMB/exp8"
-log_dir: "experiment/FMB/exp8"
-tb_dir: "experiment/FMB/exp8/tb"
+checkpoint_dir: "experiment/FMB/exp1/checkpoint"
+log_dir_link: "experiment/FMB/exp1"
+log_dir: "experiment/FMB/exp1"
+tb_dir: "experiment/FMB/exp1/tb"
 
 # Result settings
-save_path: './experiment/FMB/exp8/result'
+save_path: './experiment/FMB/exp1/result'
 
 # Log file settings
-log_file: "experiment/FMB/exp8/train_output.log"
-link_log_file: "experiment/FMB/exp8/log_last.log"
-val_log_file: "experiment/FMB/exp8/val_output.log"
-link_val_log_file: "experiment/FMB/exp8/val_last.log"
-test_log_file: "experiment/FMB/exp8/test_output.log"
+log_file: "experiment/FMB/exp1/train_output.log"
+link_log_file: "experiment/FMB/exp1/log_last.log"
+val_log_file: "experiment/FMB/exp1/val_output.log"
+link_val_log_file: "experiment/FMB/exp1/val_last.log"
+test_log_file: "experiment/FMB/exp1/test_output.log"

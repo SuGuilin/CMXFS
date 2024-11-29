@@ -764,7 +764,7 @@ class MoELayer(nn.Module):
         weights = F.softmax(out, dim=1, dtype=torch.float).to(inputs.dtype)
         topk_weights, topk_experts = torch.topk(weights, self.num_expert)
         # normalize the weights of the selected experts
-        topk_weights = F.softmax(topk_weights, dim=1, dtype=torch.float).to(inputs.dtype)
+        # topk_weights = F.softmax(topk_weights, dim=1, dtype=torch.float).to(inputs.dtype)
         out = inputs.clone()
 
         if self.training:
@@ -839,30 +839,6 @@ class StripedConv2d(nn.Module):
         return self.conv(x)
 
 
-class LayerNorm(nn.Module):
-    def __init__(self, normalized_shape, eps=1e-6, data_format="channels_last"):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(normalized_shape))
-        self.bias = nn.Parameter(torch.zeros(normalized_shape))
-        self.eps = eps
-        self.data_format = data_format
-        if self.data_format not in ["channels_last", "channels_first"]:
-            raise NotImplementedError
-        self.normalized_shape = (normalized_shape,)
-
-    def forward(self, x):
-        if self.data_format == "channels_last":
-            return F.layer_norm(
-                x, self.normalized_shape, self.weight, self.bias, self.eps
-            )
-        elif self.data_format == "channels_first":
-            u = x.mean(1, keepdim=True)
-            s = (x - u).pow(2).mean(1, keepdim=True)
-            x = (x - u) / torch.sqrt(s + self.eps)
-            x = self.weight[:, None, None] * x + self.bias[:, None, None]
-            return x
-
-
 class GatedFFN(nn.Module):
     def __init__(self, in_ch, mlp_ratio, kernel_size, act_layer,):
         super().__init__()
@@ -896,13 +872,51 @@ class GatedFFN(nn.Module):
         return x
 
 
+class SME(nn.Module):
+    def __init__(self, in_ch: int, kernel_size: int = 11):
+        super().__init__()
+        
+        self.norm_1 = LayerNorm(in_ch, data_format='channels_first')
+        self.block = StripedConvFormer(in_ch=in_ch, kernel_size=kernel_size)
+    
+        self.norm_2 = LayerNorm(in_ch, data_format='channels_first')
+        self.ffn = GatedFFN(in_ch, mlp_ratio=2, kernel_size=3, act_layer=nn.GELU())
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.block(self.norm_1(x)) + x
+        x = self.ffn(self.norm_2(x)) + x
+        return x
+
+
+class StripedConvFormer(nn.Module):
+    def __init__(self, in_ch: int, kernel_size: int):
+        super().__init__()
+        self.in_ch = in_ch
+        self.kernel_size = kernel_size
+        self.padding = kernel_size // 2
+        
+        self.proj = nn.Conv2d(in_ch, in_ch, kernel_size=1, padding=0)
+        self.to_qv = nn.Sequential(
+            nn.Conv2d(in_ch, in_ch * 2, kernel_size=1, padding=0),
+            nn.GELU(),
+        )
+
+        self.attn = StripedConv2d(in_ch, kernel_size=kernel_size, depthwise=True)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        q, v = self.to_qv(x).chunk(2, dim=1)
+        q = self.attn(q)
+        x = self.proj(q * v)
+        return x
+
+
 class ResMoEBlock(nn.Module):
     def __init__(
         self,
         in_ch: int,
         num_experts: int,
         topk: int,
-        lr_space: int = 1,
+        lr_space: int = 2,
         recursive: int = 2,
         use_shuffle: bool = False,
     ):

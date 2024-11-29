@@ -50,10 +50,23 @@ class SegEvaluator(Evaluator):
             # save colored result
             class_colors = get_class_colors()
             temp = np.zeros((pred.shape[0], pred.shape[1], 3))
+            ground_truth = np.zeros((pred.shape[0], pred.shape[1], 3))
+
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 1
+            font_color = (255, 255, 255)  # 白色文本
+            thickness = 2
+            line_type = cv2.LINE_AA
+
             for i in range(self.class_num):
                 temp[pred == i] = class_colors[i]
+                ground_truth[label == i] = class_colors[i]
 
-            cv2.imwrite(os.path.join(self.save_path, fn), temp)
+            cv2.putText(temp, 'Prediction', (10, 30), font, font_scale, font_color, thickness, line_type)
+            cv2.putText(ground_truth, 'Ground Truth', (10, 30), font, font_scale, font_color, thickness, line_type)
+
+            result = np.hstack((temp, ground_truth))
+            cv2.imwrite(os.path.join(self.save_path, fn), result)
 
         return results_dict
 

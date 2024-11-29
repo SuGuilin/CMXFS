@@ -43,7 +43,7 @@ if __name__ == "__main__":
     parser.add_argument('-v', '--verbose', default=False, action='store_true')
     parser.add_argument('--save_path', '-p', default=f'./results_Fusion/{dataset_name}')
     # Dataset Config
-    parser.add_argument('--dataset_path', default="/home/cr7/MMFS/datasets/MFNet", type=str, help='absolute path of the dataset root')
+    parser.add_argument('--dataset_path', default="/home/suguilin/MMFS/datasets/MFNet", type=str, help='absolute path of the dataset root')
     parser.add_argument('--rgb_folder', default="RGB", type=str, help='folder for visible light images')
     parser.add_argument('--rgb_format', default=".png", type=str, help='the load format for visible light images')
     parser.add_argument('--x_folder', default="Modal", type=str, help='folder for thermal imaging images')
@@ -80,7 +80,7 @@ if __name__ == "__main__":
         with open(yaml_path, "r") as f:
             config = yaml.safe_load(f)
         return edict(config)
-    config_path = '/home/cr7/CMXFS/configs/config_mfnet.yaml'
+    config_path = '/home/suguilin/CMXFS/configs/config_mfnet.yaml'
     config = load_config(config_path)
     network = MRFS(cfg=config, criterion=None, norm_layer=nn.BatchNorm2d)
     data_setting = {'rgb_root': os.path.join(args.dataset_path, args.rgb_folder),

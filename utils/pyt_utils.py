@@ -10,6 +10,7 @@ from collections import OrderedDict
 import numpy as np
 import torch
 import torch.distributed as dist
+os.environ.pop('CUDA_VISIBLE_DEVICES', None)
 
 class LogFormatter(logging.Formatter):
     log_fout = None
