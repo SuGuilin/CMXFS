@@ -48,7 +48,7 @@ class SegEvaluator(Evaluator):
             fn = name + '.png'
 
             # save colored result
-            class_colors = get_class_colors()
+            class_colors = self.config.pattale # get_class_colors()
             temp = np.zeros((pred.shape[0], pred.shape[1], 3))
             ground_truth = np.zeros((pred.shape[0], pred.shape[1], 3))
 
@@ -134,24 +134,30 @@ if __name__ == "__main__":
         with open(yaml_path, "r") as f:
             config = yaml.safe_load(f)
         return edict(config)
-    config_path = './configs/config_mfnet.yaml'
+    if dataset_name == 'MFNet':
+        config_path = './configs/config_mfnet.yaml'
+    elif dataset_name == 'FMB':
+        config_path = './configs/config_fmb.yaml'
+    else:
+        raise ValueError('Not a valid dataset name')
+
     config = load_config(config_path)
 
     network = MRFS(cfg=config, criterion=None, norm_layer=nn.BatchNorm2d)
-    data_setting = {'rgb_root': os.path.join(args.dataset_path, args.rgb_folder),
-                    'rgb_format': args.rgb_format,
-                    'x_root': os.path.join(args.dataset_path, args.x_folder),
-                    'x_format': args.x_format,
-                    'x_single_channel': args.x_is_single_channel,
-                    'gt_root': os.path.join(args.dataset_path, args.label_folder),
-                    'gt_format': args.label_format,
-                    'transform_gt': args.gt_transform,
-                    'class_names': args.class_names,
-                    'train_source': os.path.join(args.dataset_path, "train.txt"),
-                    'eval_source': os.path.join(args.dataset_path, "test.txt")}
+    data_setting = {'rgb_root': os.path.join(config.dataset_path, config.rgb_folder),
+                    'rgb_format': config.rgb_format,
+                    'x_root': os.path.join(config.dataset_path, config.x_folder),
+                    'x_format': config.x_format,
+                    'x_single_channel': config.x_is_single_channel,
+                    'gt_root': os.path.join(config.dataset_path, config.label_folder),
+                    'gt_format': config.label_format,
+                    'transform_gt': config.gt_transform,
+                    'class_names': config.class_names,
+                    'train_source': os.path.join(config.dataset_path, "train.txt"),
+                    'eval_source': os.path.join(config.dataset_path, "test.txt")}
     val_pre = ValPre()
     dataset = RGBXDataset(data_setting, 'val', val_pre)
  
     with torch.no_grad():
-        segmentor = SegEvaluator(args, dataset, network, all_dev, args.verbose, args.save_path)
+        segmentor = SegEvaluator(config, dataset, network, all_dev, config.verbose, args.save_path)
         segmentor.run(args.checkpoint_dir, args.epochs, args.log_file, args.link_log_file)
